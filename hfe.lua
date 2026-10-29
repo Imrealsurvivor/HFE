@@ -3,9 +3,10 @@ local RS = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local UIS = game:GetService("UserInputService")
 local HttpService = game:GetService("HttpService")
+local VirtualUser = game:GetService("VirtualUser")
 local player = Players.LocalPlayer
 
-print("[HFE] Starting 1.6...")
+print("[HFE] Starting 1.7...")
 
 -- safe wait: never hangs forever, so the menu always loads
 local function waitFor(par, name, t)
@@ -49,8 +50,8 @@ local MAX_AREA, MAX_RARITY = 57, 4
 
 local PLACE_DELAY = 0        -- 0 = spam. If eggs get skipped, try 0.05
 local PLACE_SPACING = 3
-local HATCH_INTERVAL = 0.1   -- auto hatch spam speed
-local RECORD_RANGE = 200     -- record mode: egg must be this close to you
+local HATCH_INTERVAL = 0.1
+local RECORD_RANGE = 200
 
 local running = true
 local busy = false
@@ -61,8 +62,12 @@ local state = {
     LoadedOnly = false,
     Treadmill = true,
     Record = false,
+    AntiAFK = true,
+    ESP = false,
+    ESPSelected = false,
     FilterArea = 0,
     SaveArea = 57,
+    TpArea = 57,
     Speed = 450,
 }
 local selected = {}
@@ -73,7 +78,7 @@ local GUARDIAN_POS = {
     [57] = Vector3.new(3, 2510, 7763),
     -- [56] = Vector3.new(x, y, z),
 }
-local savedPos = {}          -- positions you saved or recorded (kept in a file)
+local savedPos = {}
 local POS_FILE = "HFE_positions.json"
 
 local function persistPositions()
@@ -241,6 +246,17 @@ local function itemCount()
     end
     return n
 end
+
+-- ANTI AFK
+local idledConn = player.Idled:Connect(function()
+    if state.AntiAFK then
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new(0, 0))
+        end)
+        print("[HFE] Anti AFK: kept you in the game")
+    end
+end)
 
 -- TREADMILL (the remote is a toggle)
 local treadmillOn = false
@@ -542,7 +558,7 @@ local function placeAllEggs()
     placing, busy = false, false
 end
 
--- AUTO HATCH: collects egg ids from your tools AND from placed eggs in the world
+-- AUTO HATCH: ids from your tools AND from placed eggs in the world
 local worldIds, lastWorldScan = {}, 0
 local function scanWorldIds()
     if os.clock() - lastWorldScan < 2 then return worldIds end
@@ -626,7 +642,29 @@ local function dumpEggs()
     print("[HFE] ===== END =====")
 end
 
--- UI (landscape)
+local function allPositions()
+    local merged = {}
+    for a, p in pairs(GUARDIAN_POS) do merged[a] = p end
+    for a, p in pairs(savedPos) do merged[a] = p end
+    return merged
+end
+
+local function teleportToArea(a)
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    local cf = getGuardianCFrame(a)
+    if not cf then
+        warn("[HFE] No position for area " .. tostring(a))
+        return
+    end
+    hrp.CFrame = cf + Vector3.new(0, 3, 0)
+    hrp.AssemblyLinearVelocity = Vector3.zero
+end
+
+-- =========================
+-- UI (landscape, left nav bar)
+-- =========================
 local parent
 do
     local ok, h = pcall(function() return gethui and gethui() end)
@@ -650,8 +688,9 @@ gui.DisplayOrder = 999
 local okParent = pcall(function() gui.Parent = parent end)
 if not okParent or not gui.Parent then gui.Parent = player:WaitForChild("PlayerGui") end
 
-local FULL_SIZE = UDim2.fromOffset(640, 300)
+local FULL_SIZE = UDim2.fromOffset(600, 300)
 local MINI_SIZE = UDim2.fromOffset(120, 28)
+local NAV_W = 110
 
 local frame = Instance.new("Frame")
 frame.Size = FULL_SIZE
@@ -668,6 +707,7 @@ content.BackgroundTransparency = 1
 content.BorderSizePixel = 0
 content.Parent = frame
 
+-- title bar
 local title = Instance.new("Frame")
 title.Size = UDim2.new(1, 0, 0, 28)
 title.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
@@ -744,10 +784,12 @@ do
 end
 
 local ON, OFF = Color3.fromRGB(60, 170, 90), Color3.fromRGB(170, 60, 60)
-local COL_L, COL_R, COL_3, COL_W = 10, 220, 430, 200
-local updateList
+local GRAY = Color3.fromRGB(70, 70, 90)
+local BLUE = Color3.fromRGB(50, 100, 170)
+local GOLD = Color3.fromRGB(150, 100, 30)
 
-local function makeButton(text, x, y, w, h, color)
+-- UI helpers (take a parent so each tab has its own page)
+local function makeButton(par, text, x, y, w, h, color)
     local b = Instance.new("TextButton")
     b.Size = UDim2.fromOffset(w, h)
     b.Position = UDim2.fromOffset(x, y)
@@ -757,15 +799,30 @@ local function makeButton(text, x, y, w, h, color)
     b.Font = Enum.Font.GothamBold
     b.TextSize = 13
     b.TextColor3 = Color3.new(1, 1, 1)
-    b.Parent = content
+    b.Parent = par
     Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
     return b
 end
 
-local function makeToggle(text, x, y, key, onChange, w)
-    w = w or COL_W
-    local b = makeButton("", x, y, w, 28, OFF)
-    if w < COL_W then b.TextSize = 11 end
+local function makeLabel(par, text, x, y, w, h, size, color, bold)
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.fromOffset(w, h)
+    l.Position = UDim2.fromOffset(x, y)
+    l.BackgroundTransparency = 1
+    l.Text = text
+    l.TextColor3 = color or Color3.new(1, 1, 1)
+    l.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+    l.TextSize = size or 11
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.TextYAlignment = Enum.TextYAlignment.Top
+    l.TextWrapped = true
+    l.Parent = par
+    return l
+end
+
+local function makeToggle(par, text, x, y, w, key, onChange)
+    local b = makeButton(par, "", x, y, w, 28, OFF)
+    if w < 150 then b.TextSize = 11 end
     local function refresh()
         b.Text = text .. ": " .. (state[key] and "ON" or "OFF")
         b.BackgroundColor3 = state[key] and ON or OFF
@@ -776,19 +833,11 @@ local function makeToggle(text, x, y, key, onChange, w)
         refresh()
     end)
     refresh()
+    return b
 end
 
-local function makeInput(labelText, x, y, w, key, minV, maxV, onChange)
-    local l = Instance.new("TextLabel")
-    l.Size = UDim2.fromOffset(w, 12)
-    l.Position = UDim2.fromOffset(x, y)
-    l.BackgroundTransparency = 1
-    l.Text = labelText
-    l.TextColor3 = Color3.new(1, 1, 1)
-    l.Font = Enum.Font.Gotham
-    l.TextSize = 10
-    l.Parent = content
-
+local function makeInput(par, labelText, x, y, w, key, minV, maxV, onChange)
+    makeLabel(par, labelText, x, y, w, 12, 10)
     local box = Instance.new("TextBox")
     box.Size = UDim2.fromOffset(w, 24)
     box.Position = UDim2.fromOffset(x, y + 13)
@@ -799,7 +848,7 @@ local function makeInput(labelText, x, y, w, key, minV, maxV, onChange)
     box.Font = Enum.Font.Gotham
     box.TextSize = 14
     box.ClearTextOnFocus = false
-    box.Parent = content
+    box.Parent = par
     Instance.new("UICorner", box).CornerRadius = UDim.new(0, 6)
     box.FocusLost:Connect(function()
         local n = tonumber(box.Text)
@@ -809,26 +858,66 @@ local function makeInput(labelText, x, y, w, key, minV, maxV, onChange)
     end)
 end
 
--- ALL EGGS LIST (Egg_1_1 .. Egg_57_4)
-local listLabel = Instance.new("TextLabel")
-listLabel.Size = UDim2.fromOffset(COL_W, 16)
-listLabel.Position = UDim2.fromOffset(COL_L, 32)
-listLabel.BackgroundTransparency = 1
-listLabel.Text = "STEAL EGG  (● = loaded now)"
-listLabel.TextColor3 = Color3.new(1, 1, 1)
-listLabel.Font = Enum.Font.GothamBold
-listLabel.TextSize = 11
-listLabel.Parent = content
+-- LEFT NAV BAR + PAGES
+local nav = Instance.new("Frame")
+nav.Size = UDim2.new(0, NAV_W, 1, -28)
+nav.Position = UDim2.fromOffset(0, 28)
+nav.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+nav.BorderSizePixel = 0
+nav.Parent = content
+
+local pagesHolder = Instance.new("Frame")
+pagesHolder.Size = UDim2.new(1, -NAV_W, 1, -28)
+pagesHolder.Position = UDim2.fromOffset(NAV_W, 28)
+pagesHolder.BackgroundTransparency = 1
+pagesHolder.BorderSizePixel = 0
+pagesHolder.Parent = content
+
+local pages, navBtns = {}, {}
+local function showPage(name)
+    for n, p in pairs(pages) do p.Visible = (n == name) end
+    for n, b in pairs(navBtns) do
+        b.BackgroundColor3 = (n == name) and GOLD or Color3.fromRGB(45, 45, 58)
+    end
+end
+
+local TABS = { "MAIN", "AUTO", "TELEPORT", "SETTING", "VISUAL" }
+for i, name in ipairs(TABS) do
+    local p = Instance.new("Frame")
+    p.Size = UDim2.fromScale(1, 1)
+    p.BackgroundTransparency = 1
+    p.BorderSizePixel = 0
+    p.Visible = false
+    p.Parent = pagesHolder
+    pages[name] = p
+
+    local b = makeButton(nav, name, 6, 6 + (i - 1) * 38, NAV_W - 12, 32, Color3.fromRGB(45, 45, 58))
+    b.TextSize = 12
+    b.MouseButton1Click:Connect(function() showPage(name) end)
+    navBtns[name] = b
+end
+
+-- nav bottom: EXIT + version
+local exitBtn = makeButton(nav, "EXIT", 6, 204, NAV_W - 12, 26, Color3.fromRGB(120, 40, 40))
+makeLabel(nav, "Version 1.7 by imrealsurvivor", 6, 236, NAV_W - 12, 28, 9, Color3.fromRGB(170, 170, 185))
+
+-- =========================
+-- MAIN TAB (stealing area)
+-- =========================
+local main = pages.MAIN
+local updateList
+
+makeLabel(main, "STEAL EGG  (● = loaded now)", 6, 4, 210, 16, 11, nil, true)
 
 local scroll = Instance.new("ScrollingFrame")
-scroll.Size = UDim2.fromOffset(COL_W, 140)
-scroll.Position = UDim2.fromOffset(COL_L, 50)
+scroll.Size = UDim2.fromOffset(210, 196)
+scroll.Position = UDim2.fromOffset(6, 22)
 scroll.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
 scroll.BorderSizePixel = 0
 scroll.ScrollBarThickness = 4
 scroll.CanvasSize = UDim2.new()
 scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-scroll.Parent = content
+scroll.Parent = main
 Instance.new("UICorner", scroll).CornerRadius = UDim.new(0, 6)
 local layout = Instance.new("UIListLayout", scroll)
 layout.Padding = UDim.new(0, 3)
@@ -878,21 +967,20 @@ task.spawn(function()
     end
 end)
 
-local clearBtn = makeButton("Clear Selection", COL_L, 196, COL_W, 28, Color3.fromRGB(70, 70, 90))
+local clearBtn = makeButton(main, "Clear Selection", 6, 224, 210, 28, GRAY)
 clearBtn.MouseButton1Click:Connect(function()
     selected = {}
     updateList()
 end)
 
--- middle column
-makeToggle("Auto Steal Egg", COL_R, 32, "AutoSteal", function(on)
+makeToggle(main, "Auto Steal Egg", 226, 4, 256, "AutoSteal", function(on)
     if not on then
         if currentTween then currentTween:Cancel() end
         setTreadmill(false)
     end
 end)
 
-local stealNow = makeButton("STEAL SELECTED NOW", COL_R, 64, COL_W, 28, Color3.fromRGB(50, 100, 170))
+local stealNow = makeButton(main, "STEAL SELECTED NOW", 226, 38, 256, 28, BLUE)
 stealNow.MouseButton1Click:Connect(function()
     if busy then return end
     task.spawn(function()
@@ -907,101 +995,38 @@ stealNow.MouseButton1Click:Connect(function()
     end)
 end)
 
-makeToggle("Auto Click", COL_R, 96, "AutoClick")
-makeToggle("Loaded Only", COL_R, 128, "LoadedOnly", updateList, 97)
-makeToggle("Treadmill", COL_R + 103, 128, "Treadmill", function(on)
+makeToggle(main, "Loaded Only", 226, 72, 256, "LoadedOnly", function() updateList() end)
+makeInput(main, "Show Area (0=all)", 226, 108, 124, "FilterArea", 0, MAX_AREA, function() updateList() end)
+makeInput(main, "Tween Speed (1-1000)", 358, 108, 124, "Speed", 1, 1000)
+makeLabel(main, "Flow: area position > egg > grab > tween home. Highest area goes first. Areas need a saved position (TELEPORT tab).",
+    226, 152, 256, 60, 10, Color3.fromRGB(170, 170, 185))
+
+-- =========================
+-- AUTO TAB (treadmill, hatch, place)
+-- =========================
+local auto = pages.AUTO
+makeLabel(auto, "AUTOMATION", 6, 4, 230, 16, 11, nil, true)
+makeToggle(auto, "Treadmill (while waiting)", 6, 22, 230, "Treadmill", function(on)
     if not on then setTreadmill(false) end
-end, 97)
-
-makeInput("Show Area (0=all)", COL_R, 160, 97, "FilterArea", 0, MAX_AREA, updateList)
-makeInput("Speed (1-1000)", COL_R + 103, 160, 97, "Speed", 1, 1000)
-
-local exitBtn = makeButton("EXIT", COL_R, 202, COL_W, 24, Color3.fromRGB(120, 40, 40))
-exitBtn.MouseButton1Click:Connect(function()
-    state.AutoSteal = false
-    state.AutoClick = false
-    state.AutoHatch = false
-    state.Record = false
-    setTreadmill(false)
-    running = false
-    if currentTween then currentTween:Cancel() end
-    gui:Destroy()
-    print("[HFE] Exited")
 end)
+makeToggle(auto, "Auto Hatch", 6, 56, 230, "AutoHatch")
+makeToggle(auto, "Auto Click", 6, 90, 230, "AutoClick")
+makeLabel(auto, "Treadmill turns on while Auto Steal waits for an egg and turns off when your egg spawns.",
+    6, 126, 230, 50, 10, Color3.fromRGB(170, 170, 185))
 
--- saved positions: label + copy button (middle column, bottom)
-local savedLabel = Instance.new("TextLabel")
-savedLabel.Size = UDim2.fromOffset(COL_W, 14)
-savedLabel.Position = UDim2.fromOffset(COL_R, 232)
-savedLabel.BackgroundTransparency = 1
-savedLabel.TextColor3 = Color3.fromRGB(170, 170, 185)
-savedLabel.Font = Enum.Font.Gotham
-savedLabel.TextSize = 10
-savedLabel.TextXAlignment = Enum.TextXAlignment.Left
-savedLabel.Parent = content
-
-local function allPositions()
-    local merged = {}
-    for a, p in pairs(GUARDIAN_POS) do merged[a] = p end
-    for a, p in pairs(savedPos) do merged[a] = p end
-    return merged
-end
-
-refreshSaved = function()
-    local n = 0
-    for _ in pairs(allPositions()) do n = n + 1 end
-    savedLabel.Text = "Areas with a position: " .. n .. " / " .. MAX_AREA
-end
-refreshSaved()
-
-local copyBtn = makeButton("COPY ALL POSITIONS", COL_R, 248, COL_W, 24, Color3.fromRGB(70, 70, 90))
-copyBtn.MouseButton1Click:Connect(function()
-    local keys = {}
-    for a in pairs(allPositions()) do table.insert(keys, a) end
-    table.sort(keys)
-    local lines = {}
-    for _, a in ipairs(keys) do
-        local p = allPositions()[a]
-        table.insert(lines, string.format("[%d] = Vector3.new(%.1f, %.1f, %.1f),", a, p.X, p.Y, p.Z))
-    end
-    local text = table.concat(lines, "\n")
-    print("[HFE] ===== POSITIONS =====\n" .. text)
-    if setclipboard then pcall(setclipboard, text) end
-end)
-
--- right column: place + hatch + record
-local colLabel = Instance.new("TextLabel")
-colLabel.Size = UDim2.fromOffset(COL_W, 16)
-colLabel.Position = UDim2.fromOffset(COL_3, 32)
-colLabel.BackgroundTransparency = 1
-colLabel.Text = "PLACE + HATCH + COORDS"
-colLabel.TextColor3 = Color3.new(1, 1, 1)
-colLabel.Font = Enum.Font.GothamBold
-colLabel.TextSize = 11
-colLabel.Parent = content
-
-local placeBtn = makeButton("PLACE EGG ALL", COL_3, 50, COL_W, 28, Color3.fromRGB(50, 100, 170))
+makeLabel(auto, "PLACE EGGS", 246, 4, 230, 16, 11, nil, true)
+local placeBtn = makeButton(auto, "PLACE EGG ALL (spam)", 246, 22, 230, 28, BLUE)
 placeBtn.MouseButton1Click:Connect(function()
     task.spawn(placeAllEggs)
 end)
 
-makeToggle("Auto Hatch", COL_3, 82, "AutoHatch")
-
-local posLabel = Instance.new("TextLabel")
-posLabel.Size = UDim2.fromOffset(COL_W, 14)
-posLabel.Position = UDim2.fromOffset(COL_3, 114)
-posLabel.BackgroundTransparency = 1
-posLabel.TextColor3 = Color3.fromRGB(170, 170, 185)
-posLabel.Font = Enum.Font.Gotham
-posLabel.TextSize = 10
-posLabel.TextXAlignment = Enum.TextXAlignment.Left
-posLabel.Parent = content
+local posLabel = makeLabel(auto, "", 246, 56, 230, 14, 10, Color3.fromRGB(170, 170, 185))
 local function refreshPosLabel()
     posLabel.Text = string.format("Place at: %.1f, %.1f, %.1f", placePos.X, placePos.Y, placePos.Z)
 end
 refreshPosLabel()
 
-local setPosBtn = makeButton("SET PLACE POS (here)", COL_3, 130, COL_W, 28, Color3.fromRGB(70, 70, 90))
+local setPosBtn = makeButton(auto, "SET PLACE POS (here)", 246, 74, 230, 28, GRAY)
 setPosBtn.MouseButton1Click:Connect(function()
     local char = player.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -1015,17 +1040,18 @@ setPosBtn.MouseButton1Click:Connect(function()
     print("[HFE] Place position set:", placePos)
 end)
 
-local dumpBtn = makeButton("DUMP EGG INFO (F9)", COL_3, 162, COL_W, 28, Color3.fromRGB(70, 70, 90))
+local dumpBtn = makeButton(auto, "DUMP EGG INFO (F9)", 246, 108, 230, 28, GRAY)
 dumpBtn.MouseButton1Click:Connect(function()
     task.spawn(dumpEggs)
 end)
 
-makeToggle("Record Coords", COL_3, 194, "Record", function(on)
-    if on then recorded = {} end
-end)
-
-makeInput("Save area (1-57)", COL_3, 226, 97, "SaveArea", 1, MAX_AREA)
-local saveBtn = makeButton("SAVE POSITION", COL_3 + 103, 239, 97, 24, Color3.fromRGB(150, 100, 30))
+-- =========================
+-- TELEPORT TAB (positions)
+-- =========================
+local tp = pages.TELEPORT
+makeLabel(tp, "SAVE / RECORD", 6, 4, 230, 14, 11, nil, true)
+makeInput(tp, "Save area (1-57)", 6, 22, 110, "SaveArea", 1, MAX_AREA)
+local saveBtn = makeButton(tp, "SAVE POSITION", 122, 35, 114, 24, GOLD)
 saveBtn.TextSize = 11
 saveBtn.MouseButton1Click:Connect(function()
     local char = player.Character
@@ -1034,15 +1060,175 @@ saveBtn.MouseButton1Click:Connect(function()
     savePosition(state.SaveArea, hrp.Position)
 end)
 
-local versionLabel = Instance.new("TextLabel")
-versionLabel.Size = UDim2.new(1, -20, 0, 16)
-versionLabel.Position = UDim2.fromOffset(10, 278)
-versionLabel.BackgroundTransparency = 1
-versionLabel.Text = "Version 1.6 by imrealsurvivor"
-versionLabel.TextColor3 = Color3.fromRGB(170, 170, 185)
-versionLabel.Font = Enum.Font.Gotham
-versionLabel.TextSize = 11
-versionLabel.TextXAlignment = Enum.TextXAlignment.Left
-versionLabel.Parent = content
+makeToggle(tp, "Record Coords", 6, 68, 230, "Record", function(on)
+    if on then recorded = {} end
+end)
 
-print("[HFE] Menu loaded (1.6)")
+local copyBtn = makeButton(tp, "COPY ALL POSITIONS", 6, 102, 230, 28, GRAY)
+copyBtn.MouseButton1Click:Connect(function()
+    local keys = {}
+    for a in pairs(allPositions()) do table.insert(keys, a) end
+    table.sort(keys)
+    local lines = {}
+    local all = allPositions()
+    for _, a in ipairs(keys) do
+        local p = all[a]
+        table.insert(lines, string.format("[%d] = Vector3.new(%.1f, %.1f, %.1f),", a, p.X, p.Y, p.Z))
+    end
+    local text = table.concat(lines, "\n")
+    print("[HFE] ===== POSITIONS =====\n" .. text)
+    if setclipboard then pcall(setclipboard, text) end
+end)
+
+local savedLabel = makeLabel(tp, "", 6, 136, 230, 14, 10, Color3.fromRGB(170, 170, 185))
+refreshSaved = function()
+    local n = 0
+    for _ in pairs(allPositions()) do n = n + 1 end
+    savedLabel.Text = "Areas with a position: " .. n .. " / " .. MAX_AREA
+end
+refreshSaved()
+
+makeLabel(tp, "GO TO", 246, 4, 230, 14, 11, nil, true)
+makeInput(tp, "Teleport area (1-57)", 246, 22, 110, "TpArea", 1, MAX_AREA)
+local goBtn = makeButton(tp, "TELEPORT", 362, 35, 114, 24, BLUE)
+goBtn.TextSize = 11
+goBtn.MouseButton1Click:Connect(function()
+    teleportToArea(state.TpArea)
+end)
+
+local homeBtn = makeButton(tp, "GO HOME (tween)", 246, 68, 230, 28, GRAY)
+homeBtn.MouseButton1Click:Connect(function()
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    task.spawn(tweenTo, hrp, HOME)
+end)
+
+local placeGoBtn = makeButton(tp, "GO TO PLACE POS", 246, 102, 230, 28, GRAY)
+placeGoBtn.MouseButton1Click:Connect(function()
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    hrp.CFrame = CFrame.new(placePos + Vector3.new(0, 5, 0))
+end)
+
+makeLabel(tp, "Stand in an area, pick its number and tap SAVE POSITION. Or turn Record Coords on and walk near eggs.",
+    246, 138, 230, 50, 10, Color3.fromRGB(170, 170, 185))
+
+-- =========================
+-- SETTING TAB
+-- =========================
+local setting = pages.SETTING
+makeLabel(setting, "SETTINGS", 6, 4, 230, 16, 11, nil, true)
+makeToggle(setting, "Anti AFK", 6, 22, 230, "AntiAFK")
+makeLabel(setting, "Anti AFK stops the game from kicking you for being idle (for example while the treadmill runs).",
+    6, 56, 230, 50, 10, Color3.fromRGB(170, 170, 185))
+
+-- =========================
+-- VISUAL TAB (ESP)
+-- =========================
+local visual = pages.VISUAL
+local espFolder = Instance.new("Folder")
+espFolder.Name = "HFE_ESP"
+espFolder.Parent = gui
+local espItems = {}
+local RARITY_COLORS = {
+    Color3.fromRGB(230, 230, 230),
+    Color3.fromRGB(90, 220, 110),
+    Color3.fromRGB(100, 160, 255),
+    Color3.fromRGB(255, 200, 60),
+}
+
+local function clearESP()
+    for _, it in pairs(espItems) do it.gui:Destroy() end
+    espItems = {}
+end
+
+local function espPart(obj)
+    if obj:IsA("BasePart") then return obj end
+    return obj:FindFirstChildWhichIsA("BasePart", true)
+end
+
+makeLabel(visual, "ESP", 6, 4, 230, 16, 11, nil, true)
+makeToggle(visual, "Egg ESP", 6, 22, 230, "ESP", function(on)
+    if not on then clearESP() end
+end)
+makeToggle(visual, "Selected eggs only", 6, 56, 230, "ESPSelected")
+makeLabel(visual, "Shows every loaded egg through walls with its name and distance. Colors: white = rarity 1, green = 2, blue = 3, gold = 4.",
+    6, 92, 230, 70, 10, Color3.fromRGB(170, 170, 185))
+
+task.spawn(function()
+    while running do
+        if state.ESP then
+            pcall(function()
+                local char = player.Character
+                local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                local wanted = {}
+                for name, obj in pairs(getLoaded()) do
+                    if not state.ESPSelected or selected[name] then
+                        wanted[obj] = name
+                    end
+                end
+                for obj, it in pairs(espItems) do
+                    if not wanted[obj] or not obj.Parent then
+                        it.gui:Destroy()
+                        espItems[obj] = nil
+                    end
+                end
+                for obj, name in pairs(wanted) do
+                    local it = espItems[obj]
+                    if not it then
+                        local part = espPart(obj)
+                        if part then
+                            local _, r = parse(name)
+                            local color = RARITY_COLORS[r] or RARITY_COLORS[1]
+                            local b = Instance.new("BillboardGui")
+                            b.Name = "esp"
+                            b.Adornee = part
+                            b.AlwaysOnTop = true
+                            b.Size = UDim2.fromOffset(150, 30)
+                            b.StudsOffset = Vector3.new(0, 4, 0)
+                            local l = Instance.new("TextLabel")
+                            l.Size = UDim2.fromScale(1, 1)
+                            l.BackgroundTransparency = 1
+                            l.TextColor3 = color
+                            l.TextStrokeTransparency = 0
+                            l.Font = Enum.Font.GothamBold
+                            l.TextSize = 14
+                            l.Text = name:upper()
+                            l.Parent = b
+                            b.Parent = espFolder
+                            it = { gui = b, label = l, part = part, name = name }
+                            espItems[obj] = it
+                        end
+                    end
+                    if it and hrp then
+                        local d = (it.part.Position - hrp.Position).Magnitude
+                        it.label.Text = string.format("%s  [%dm]", it.name:upper(), d)
+                    end
+                end
+            end)
+        else
+            if next(espItems) then clearESP() end
+        end
+        task.wait(0.5)
+    end
+end)
+
+-- EXIT
+exitBtn.MouseButton1Click:Connect(function()
+    state.AutoSteal = false
+    state.AutoClick = false
+    state.AutoHatch = false
+    state.Record = false
+    state.ESP = false
+    setTreadmill(false)
+    running = false
+    if currentTween then currentTween:Cancel() end
+    if idledConn then idledConn:Disconnect() end
+    gui:Destroy()
+    print("[HFE] Exited")
+end)
+
+showPage("MAIN")
+print("[HFE] Menu loaded (1.7)")
