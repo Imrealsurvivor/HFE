@@ -9,7 +9,7 @@ local player = Players.LocalPlayer
 local VIM
 pcall(function() VIM = game:GetService("VirtualInputManager") end)
 
-print("[HFE] Starting 1.9...")
+print("[HFE] Starting 1.9.1...")
 
 -- safe wait: never hangs forever, so the menu always loads
 local function waitFor(par, name, t)
@@ -76,7 +76,7 @@ local state = {
     AutoHatch = false,
     AutoPlace = false,
     PlaceClick = false,
-    ReturnHome = false,
+    ReturnHome = true,       -- tween home after "Egg secured!"
     LoadedOnly = false,
     Treadmill = true,
     AntiAFK = true,
@@ -559,7 +559,7 @@ installSpy()
 -- =========================
 -- STEAL
 -- =========================
--- AREA POSITION > 1s > EGG > 1s > GRAB > "Egg secured!" > next egg (no trip home)
+-- AREA POSITION > 1s > EGG > 1s > GRAB > "Egg secured!" > TWEEN HOME > next egg
 local function stealEgg(eggName, requireAuto)
     local char = player.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -645,6 +645,7 @@ local function stealEgg(eggName, requireAuto)
 
     if got then
         if state.ReturnHome and running and (not requireAuto or state.AutoSteal) then
+            print("[HFE] Tweening home after steal")
             tweenTo(hrp, homeFor(area))
         end
     else
@@ -1264,7 +1265,7 @@ do
 end
 
 local exitBtn = makeButton(nav, "EXIT", 6, 204, NAV_W - 12, 26, Color3.fromRGB(120, 40, 40))
-makeLabel(nav, "Version 1.9 by imrealsurvivor", 6, 236, NAV_W - 12, 28, 9, DIM)
+makeLabel(nav, "Version 1.9.1 by imrealsurvivor", 6, 236, NAV_W - 12, 28, 9, DIM)
 
 local updateList
 local idsLabel, securedLabel
@@ -1365,7 +1366,7 @@ do
     makeToggle(main, "Loaded Only", 226, 72, 256, "LoadedOnly", function() updateList() end)
     makeInput(main, "Show Area (0=all)", 226, 108, 124, "FilterArea", 0, MAX_AREA, function() updateList() end)
     makeInput(main, "Tween Speed (1-1000)", 358, 108, 124, "Speed", 1, 1000)
-    makeLabel(main, "Flow: area position > egg > grab > 'Egg secured!' detected > next egg. No trip home unless SETTING > Return home is ON. Highest area goes first.",
+    makeLabel(main, "Flow: area position > egg > grab > 'Egg secured!' detected > tween home > next egg. Turn off SETTING > Return home to skip the trip. Highest area goes first.",
         226, 152, 256, 56, 10, DIM)
     securedLabel = makeLabel(main, "", 226, 214, 256, 14, 10, Color3.fromRGB(90, 220, 110))
 end
@@ -1499,8 +1500,8 @@ do
     makeLabel(setting, "SETTINGS", 6, 4, 230, 16, 11, nil, true)
     makeToggle(setting, "Anti AFK", 6, 22, 230, "AntiAFK")
     makeToggle(setting, "Return home after steal", 6, 56, 230, "ReturnHome")
-    makeLabel(setting, "Anti AFK stops the idle kick (for example while the treadmill runs). Return home is OFF by default: after 'Egg secured!' the script goes straight to the next egg.",
-        6, 92, 230, 70, 10, DIM)
+    makeLabel(setting, "Anti AFK stops the idle kick (for example while the treadmill runs). Return home is ON by default: after 'Egg secured!' the script tweens to the safe zone (areas 48-57 use world 2). Turn it off to go straight to the next egg.",
+        6, 92, 230, 80, 10, DIM)
 end
 
 -- =========================
@@ -1624,4 +1625,4 @@ exitBtn.MouseButton1Click:Connect(function()
 end)
 
 showPage("MAIN")
-print("[HFE] Menu loaded (1.9)")
+print("[HFE] Menu loaded (1.9.1)")
